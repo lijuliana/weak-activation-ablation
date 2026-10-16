@@ -44,6 +44,11 @@ def parse_args():
     p.add_argument("--fracs", default="0,0.001,0.0025,0.005,0.01,0.015,0.02,0.03,0.04,0.05,0.075,0.1,0.15,0.2,0.3",
                    help="thresholds as fraction of each neuron's calibrated max |activation|")
     p.add_argument("--random-seeds", default="0,1", help="seeds for the count-matched random control")
+    p.add_argument("--random-max-frac", type=float, default=None,
+                   help="run the count-matched random control only for thresholds <= this value; beyond ~50%% "
+                        "sparsity that control is at chance on everything, so further points carry no information")
+    p.add_argument("--random-fracs", default="", help="optional fixed fractions of activations to zero at random "
+                   "(e.g. 0.01,0.03,0.1), run after the main sweep to cover the low-damage regime")
     p.add_argument("--lm-batch", type=int, default=8)
     p.add_argument("--popqa-batch", type=int, default=96)
     p.add_argument("--n-shot", type=int, default=8)
@@ -120,8 +125,13 @@ def main():
     for f in fracs:
         if f > 0:
             conds.append(("threshold", f, 0))
-            for s in seeds:
-                conds.append(("random", f, s))
+            if args.random_max_frac is None or f <= args.random_max_frac + 1e-12:
+                for s in seeds:
+                    conds.append(("random", f, s))
+
+    for pfrac in [float(x) for x in args.random_fracs.split(",") if x]:
+        for s in seeds:
+            conds.append(("randomfrac", pfrac, s))
 
     summary_f = out / "summary.jsonl"
     done = set()

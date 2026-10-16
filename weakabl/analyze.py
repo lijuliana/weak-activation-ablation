@@ -44,6 +44,24 @@ def load_results(res: Path):
     return summ, q, meta, correct, nll, nll_wt
 
 
+def within_relation_bins(q: pd.DataFrame, n_bins: int) -> np.ndarray:
+    """Popularity quantile bins computed *within each relation type* (PopQA `prop`), so every bin has
+    the same mix of relations. Guards against guessable relations (e.g. occupation) being concentrated
+    in the global rare bin."""
+    logp = np.log10(np.maximum(q["s_pop"].to_numpy(float), 1.0))
+    out = np.zeros(len(q), dtype=int)
+    for prop, idx in q.groupby("prop").indices.items():
+        lp = logp[idx]
+        ranks = np.argsort(np.argsort(lp, kind="stable"), kind="stable")
+        out[idx] = np.minimum((ranks * n_bins) // len(idx), n_bins - 1)
+    return out
+
+
+MODES = ("threshold", "random", "randomfrac")
+COND["randomfrac"] = "#1baf7a"  # categorical slot 3 (aqua)
+COND_LABEL["randomfrac"] = "fixed-fraction random ablation"
+
+
 def conditions(summ: pd.DataFrame):
     """-> {(mode, frac): [cond names (one per seed)]}, fracs sorted."""
     groups: dict[tuple[str, float], list[str]] = {}
@@ -126,33 +144,41 @@ def _xaxis(ax, label="threshold X (% of each neuron's calibrated max |activation
     ax.margins(x=0.03)
 
 
+def _series(summ, fracs, groups, nll, mode):
+    xs, ys, cis, sp = [], [], [], []
+    for f in fracs:
+        cs = groups.get((mode, f))
+        if not cs:
+            continue
+        m, ci = nll_delta(nll["baseline"], [nll[c] for c in cs])
+        xs.append(100 * f); ys.append(m); cis.append(ci)
+        sp.append(100 * summ[summ["cond"].isin(cs)]["sparsity"].mean())
+    return np.array(xs), np.array(ys), np.array(cis), np.array(sp)
+
+
 def fig_lm_loss(summ, fracs, groups, nll, nll_wt, out: Path):
-    fig, axes = plt.subplots(1, 3, figsize=(11, 3.4), constrained_layout=True)
+    fig, axes = plt.subplots(1, 3, figsize=(11.5, 3.5), constrained_layout=True)
     base = summ[summ["mode"] == "off"].iloc[0]
-    for mode in ("threshold", "random"):
-        xs, y1, c1, y2, c2, sp = [], [], [], [], [], []
-        for f in fracs:
-            cs = groups.get((mode, f))
-            if not cs:
-                continue
-            m, ci = nll_delta(nll["baseline"], [nll[c] for c in cs])
-            m2, ci2 = nll_delta(nll_wt["baseline"], [nll_wt[c] for c in cs])
-            xs.append(100 * f); y1.append(m); c1.append(ci); y2.append(m2); c2.append(ci2)
-            sp.append(summ[summ["cond"].isin(cs)]["sparsity"].mean())
-        xs = np.array(xs); c1 = np.array(c1); c2 = np.array(c2)
-        for ax, y, ci in ((axes[0], y1, c1), (axes[1], y2, c2)):
-            ax.plot(xs, y, "-o", color=COND[mode], label=COND_LABEL[mode], markeredgecolor=SURFACE, markeredgewidth=1)
-            ax.fill_between(xs, ci[:, 0], ci[:, 1], color=COND[mode], alpha=0.12, linewidth=0)
-        axes[2].plot(xs, 100 * np.array(sp), "-o", color=COND[mode], label=COND_LABEL[mode], markeredgecolor=SURFACE, markeredgewidth=1)
-    axes[0].set_title(f"Held-out LM loss, FineWeb-edu (baseline {base['fineweb_nll']:.3f} nats)")
-    axes[0].set_ylabel("increase in NLL per token (nats)")
-    axes[1].set_title(f"Held-out LM loss, WikiText-103 (baseline {base['wt103_nll']:.3f} nats)")
-    axes[1].set_ylabel("increase in NLL per token (nats)")
-    axes[2].set_title("Realized sparsity (both conditions by construction)")
-    axes[2].set_ylabel("% of MLP activations zeroed")
+    for mode in MODES:
+        if not any(m == mode for (m, _) in groups):
+            continue
+        xs, y, ci, sp = _series(summ, fracs, groups, nll, mode)
+        _, yw, ciw, _ = _series(summ, fracs, groups, nll_wt, mode)
+        kw = dict(color=COND[mode], label=COND_LABEL[mode], markeredgecolor=SURFACE, markeredgewidth=1)
+        if mode != "randomfrac":
+            axes[0].plot(xs, y, "-o", **kw); axes[0].fill_between(xs, ci[:, 0], ci[:, 1], color=COND[mode], alpha=0.12, linewidth=0)
+            axes[2].plot(xs, yw, "-o", **kw); axes[2].fill_between(xs, ciw[:, 0], ciw[:, 1], color=COND[mode], alpha=0.12, linewidth=0)
+        o = np.argsort(sp)
+        axes[1].plot(sp[o], y[o], "-o", **kw)
+    axes[0].set_title(f"FineWeb-edu loss vs threshold (baseline {base['fineweb_nll']:.3f} nats)")
+    axes[0].set_ylabel("increase in NLL per token (nats)"); _xaxis(axes[0])
+    axes[1].set_title("Same, against the fraction of activations zeroed")
+    axes[1].set_ylabel("increase in NLL per token (nats)"); axes[1].set_xlabel("% of MLP activations zeroed (all layers)")
+    axes[2].set_title(f"WikiText-103 loss vs threshold (baseline {base['wt103_nll']:.3f} nats)")
+    axes[2].set_ylabel("increase in NLL per token (nats)"); _xaxis(axes[2])
+    axes[1].legend(loc="upper left")
     for ax in axes:
-        _xaxis(ax)
-    axes[0].legend(loc="upper left")
+        ax.set_yscale("symlog", linthresh=0.01)
     fig.savefig(out / "fig1_lm_loss.png", dpi=200)
     fig.savefig(out / "fig1_lm_loss.svg")
     plt.close(fig)
@@ -160,10 +186,15 @@ def fig_lm_loss(summ, fracs, groups, nll, nll_wt, out: Path):
 
 def fig_popqa_bins(metrics, fracs, bin_labels, out: Path, base_acc_by_bin):
     n_bins = len(bin_labels)
-    fig, axes = plt.subplots(2, 2, figsize=(10, 7), constrained_layout=True, sharex=True)
-    for j, mode in enumerate(("threshold", "random")):
-        xs = np.array([100 * f for f in fracs if (mode, f) in metrics])
-        ms = [metrics[(mode, f)] for f in fracs if (mode, f) in metrics]
+    modes = [m for m in MODES if any(k[0] == m for k in metrics)]
+    fig, axes = plt.subplots(2, len(modes), figsize=(5 * len(modes), 7), constrained_layout=True, squeeze=False)
+    for j, mode in enumerate(modes):
+        keys = [f for f in fracs if (mode, f) in metrics]
+        ms = [metrics[(mode, f)] for f in keys]
+        if mode == "randomfrac":
+            xs = np.array([100 * f for f in keys]); xlabel = "% of activations zeroed at random"
+        else:
+            xs = np.array([100 * f for f in keys]); xlabel = None
         for b in range(n_bins):
             lab = f"bin {b+1}: {bin_labels[b]} views/mo (base acc {100*base_acc_by_bin[b]:.0f}%)"
             for row, key in enumerate(("retention", "forget")):
@@ -171,12 +202,17 @@ def fig_popqa_bins(metrics, fracs, bin_labels, out: Path, base_acc_by_bin):
                 ax = axes[row, j]
                 ax.plot(xs, y, "-o", color=RAMP[b], label=lab if row == 0 else None, markeredgecolor=SURFACE, markeredgewidth=1)
                 ax.fill_between(xs, ci[:, 0], ci[:, 1], color=RAMP[b], alpha=0.12, linewidth=0)
-        axes[0, j].set_title(f"{COND_LABEL[mode]}: accuracy retention by popularity")
-        axes[1, j].set_title(f"{COND_LABEL[mode]}: forget rate by popularity")
+        axes[0, j].set_title(f"{COND_LABEL[mode]}: accuracy retention")
+        axes[1, j].set_title(f"{COND_LABEL[mode]}: forget rate")
         axes[0, j].axhline(1.0, color=INK2, linewidth=0.8)
         axes[0, j].set_ylabel("PopQA accuracy / baseline accuracy")
         axes[1, j].set_ylabel("P(wrong | correct at baseline)")
-        _xaxis(axes[1, j])
+        if xlabel:
+            axes[1, j].set_xlabel(xlabel); axes[0, j].set_xlabel(xlabel)
+        else:
+            _xaxis(axes[1, j]); _xaxis(axes[0, j])
+        for row in range(2):
+            axes[row, j].set_xscale("symlog", linthresh=0.1)
     axes[0, 0].legend(loc="lower left", title="subject popularity (rare -> popular)", fontsize=8, title_fontsize=8)
     fig.savefig(out / "fig2_popqa_by_popularity.png", dpi=200)
     fig.savefig(out / "fig2_popqa_by_popularity.svg")
@@ -184,33 +220,32 @@ def fig_popqa_bins(metrics, fracs, bin_labels, out: Path, base_acc_by_bin):
 
 
 def fig_gap(metrics, fracs, dnll, out: Path):
-    fig, axes = plt.subplots(1, 3, figsize=(11.5, 3.6), constrained_layout=True)
-    for mode in ("threshold", "random"):
+    fig, axes = plt.subplots(1, 3, figsize=(12, 3.7), constrained_layout=True)
+    for mode in MODES:
         keys = [f for f in fracs if (mode, f) in metrics]
-        xs = np.array([100 * f for f in keys])
-        dn = np.array([dnll[(mode, f)] for f in keys])
-        for ax, x, lab in ((axes[0], xs, None), (axes[1], dn, None)):
-            y = np.array([metrics[(mode, f)]["gap_retention"] for f in keys])
-            ci = np.array([metrics[(mode, f)]["gap_retention_ci"] for f in keys])
-            ax.plot(x, y, "-o", color=COND[mode], label=COND_LABEL[mode], markeredgecolor=SURFACE, markeredgewidth=1)
-            ax.fill_between(x, ci[:, 0], ci[:, 1], color=COND[mode], alpha=0.12, linewidth=0)
-        y = np.array([metrics[(mode, f)]["gap_forget"] for f in keys])
-        ci = np.array([metrics[(mode, f)]["gap_forget_ci"] for f in keys])
-        axes[2].plot(dn, y, "-o", color=COND[mode], label=COND_LABEL[mode], markeredgecolor=SURFACE, markeredgewidth=1)
-        axes[2].fill_between(dn, ci[:, 0], ci[:, 1], color=COND[mode], alpha=0.12, linewidth=0)
+        if not keys:
+            continue
+        xs = np.array([100 * f for f in keys]); dn = np.array([dnll[(mode, f)] for f in keys])
+        kw = dict(color=COND[mode], label=COND_LABEL[mode], markeredgecolor=SURFACE, markeredgewidth=1)
+        yr = np.array([metrics[(mode, f)]["gap_retention"] for f in keys]); cr = np.array([metrics[(mode, f)]["gap_retention_ci"] for f in keys])
+        yf = np.array([metrics[(mode, f)]["gap_forget"] for f in keys]); cf = np.array([metrics[(mode, f)]["gap_forget_ci"] for f in keys])
+        if mode != "randomfrac":
+            axes[0].plot(xs, yr, "-o", **kw); axes[0].fill_between(xs, cr[:, 0], cr[:, 1], color=COND[mode], alpha=0.12, linewidth=0)
+        o = np.argsort(dn)
+        axes[1].plot(dn[o], yr[o], "-o", **kw); axes[1].fill_between(dn[o], cr[o, 0], cr[o, 1], color=COND[mode], alpha=0.12, linewidth=0)
+        axes[2].plot(dn[o], yf[o], "-o", **kw); axes[2].fill_between(dn[o], cf[o, 0], cf[o, 1], color=COND[mode], alpha=0.12, linewidth=0)
     for ax in axes:
         ax.axhline(0, color=INK2, linewidth=0.8)
     axes[0].set_title("Retention gap: rarest bin minus most popular bin")
-    axes[0].set_ylabel("retention(rare) - retention(popular)")
-    _xaxis(axes[0])
-    axes[1].set_title("Same gap at matched overall damage")
+    axes[0].set_ylabel("retention(rare) - retention(popular)"); _xaxis(axes[0]); axes[0].set_xscale("symlog", linthresh=0.1)
+    axes[1].set_title("Retention gap at matched overall damage")
     axes[1].set_ylabel("retention(rare) - retention(popular)")
-    axes[1].set_xlabel("increase in held-out NLL per token (nats, FineWeb-edu)")
+    axes[1].set_xlabel("increase in held-out NLL per token (nats, FineWeb-edu)"); axes[1].set_xscale("symlog", linthresh=0.01)
     axes[2].set_title("Forget-rate gap at matched overall damage")
     axes[2].set_ylabel("forget(rare) - forget(popular)")
-    axes[2].set_xlabel("increase in held-out NLL per token (nats, FineWeb-edu)")
-    axes[0].legend(loc="best")
-    fig.text(0.01, -0.03, "Below zero: rare facts lose relatively more. 95% bootstrap CIs over questions.", color=INK2, fontsize=8)
+    axes[2].set_xlabel("increase in held-out NLL per token (nats, FineWeb-edu)"); axes[2].set_xscale("symlog", linthresh=0.01)
+    axes[1].legend(loc="best", fontsize=8)
+    fig.text(0.01, -0.03, "Retention gap below zero (forget gap above zero): rare facts lose relatively more. 95% bootstrap CIs over questions.", color=INK2, fontsize=8)
     fig.savefig(out / "fig3_rare_vs_popular_gap.png", dpi=200, bbox_inches="tight")
     fig.savefig(out / "fig3_rare_vs_popular_gap.svg", bbox_inches="tight")
     plt.close(fig)
@@ -221,8 +256,10 @@ def fig_token_freq(fracs, groups, nll, res: Path, out: Path):
         fb, labels, from_calib = token_freq_bins(res)
     except FileNotFoundError:
         return None
-    fig, axes = plt.subplots(1, 2, figsize=(10, 3.6), constrained_layout=True, sharey=True)
-    for j, mode in enumerate(("threshold", "random")):
+    modes = [m for m in ("threshold", "random") if any(k[0] == m for k in groups)]
+    fig, axes = plt.subplots(1, len(modes), figsize=(5 * len(modes), 3.6), constrained_layout=True, sharey=True, squeeze=False)
+    axes = axes[0]
+    for j, mode in enumerate(modes):
         for b in range(len(labels)):
             xs, ys = [], []
             for f in fracs:
@@ -233,7 +270,7 @@ def fig_token_freq(fracs, groups, nll, res: Path, out: Path):
                 xs.append(100 * f); ys.append(d[fb == b].mean())
             axes[j].plot(xs, ys, "-o", color=RAMP[b], label=f"{labels[b]}", markeredgecolor=SURFACE, markeredgewidth=1)
         axes[j].set_title(f"{COND_LABEL[mode]}: loss increase by target-token frequency")
-        _xaxis(axes[j])
+        _xaxis(axes[j]); axes[j].set_xscale("symlog", linthresh=0.1); axes[j].set_yscale("symlog", linthresh=0.01)
     axes[0].set_ylabel("increase in NLL per token (nats)")
     src = "calibration set" if from_calib else "held-out set"
     axes[0].legend(title=f"token count in {src} (rare -> common)", fontsize=8, title_fontsize=8)
@@ -248,14 +285,22 @@ def main():
     p.add_argument("--results", required=True)
     p.add_argument("--figures", required=True)
     p.add_argument("--n-boot", type=int, default=1000)
+    p.add_argument("--binning", choices=["within-relation", "global"], default="within-relation",
+                   help="popularity bins per relation type (default) or global quantiles as recorded by run.py")
     a = p.parse_args()
     res, out = Path(a.results), Path(a.figures)
     out.mkdir(parents=True, exist_ok=True)
 
     summ, q, meta, correct, nll, nll_wt = load_results(res)
     groups, fracs = conditions(summ)
-    bins = q["bin"].to_numpy()
     n_bins = len(meta["bin_labels"])
+    if a.binning == "within-relation":
+        bins = within_relation_bins(q, n_bins)
+        logp = np.log10(np.maximum(q["s_pop"].to_numpy(float), 1.0))
+        bin_labels = [f"median 10^{np.median(logp[bins == b]):.1f}" for b in range(n_bins)]
+    else:
+        bins = q["bin"].to_numpy()
+        bin_labels = meta["bin_labels"]
     base = correct["baseline"]
     base_acc_by_bin = [base[bins == b].mean() for b in range(n_bins)]
 
@@ -279,17 +324,17 @@ def main():
                      "gap_forget": m["gap_forget"], "gap_forget_lo": m["gap_forget_ci"][0],
                      "gap_forget_hi": m["gap_forget_ci"][1]})
     table = pd.DataFrame(rows).sort_values(["mode", "frac"])
-    table.to_csv(res / "metrics.csv", index=False)
+    table.to_csv(res / ("metrics.csv" if a.binning == "within-relation" else "metrics_globalbins.csv"), index=False)
 
     fig_lm_loss(summ, fracs, groups, nll, nll_wt, out)
-    fig_popqa_bins(metrics, fracs, meta["bin_labels"], out, base_acc_by_bin)
+    fig_popqa_bins(metrics, fracs, bin_labels, out, base_acc_by_bin)
     fig_gap(metrics, fracs, dnll, out)
     fig_token_freq(fracs, groups, nll, res, out)
 
     calib = torch.load(res / "calibration.pt")
     amax = calib["amax"]
-    print(f"baseline: PopQA acc {base.mean():.4f}; by bin (rare->popular) {[round(x,3) for x in base_acc_by_bin]}; "
-          f"bins {meta['bin_labels']}; n={len(base)}")
+    print(f"binning={a.binning}; baseline: PopQA acc {base.mean():.4f}; by bin (rare->popular) "
+          f"{[round(float(x),3) for x in base_acc_by_bin]}; bins {bin_labels}; n={len(base)}")
     print(f"calibration: {calib['n_tokens']} tokens; per-neuron max |a| median {amax.median():.3f}, "
           f"p99 {amax.flatten().quantile(0.99):.3f}, max {amax.max():.3f}")
     with pd.option_context("display.width", 200, "display.max_columns", 30, "display.float_format", "{:.4f}".format):

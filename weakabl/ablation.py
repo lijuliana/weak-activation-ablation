@@ -38,6 +38,8 @@ class Ablator:
     - "threshold": zero entries with |a| < frac * amax[neuron].
     - "random":    for each (layer, token) zero the *same number* of entries as the
                    threshold rule would, but chosen uniformly at random.
+    - "randomfrac": zero a fixed fraction `frac` of entries uniformly at random (not tied to
+                   the threshold rule); extends the random control into the low-damage regime.
     """
 
     def __init__(self, model, seed: int = 0):
@@ -61,7 +63,7 @@ class Ablator:
         self._handles = []
 
     def set(self, mode: str, frac: float = 0.0, seed: int | None = None, track: bool = False):
-        assert mode in ("off", "calibrate", "threshold", "random"), mode
+        assert mode in ("off", "calibrate", "threshold", "random", "randomfrac"), mode
         if mode in ("threshold", "random"):
             assert self.amax is not None, "load or compute calibration first"
         self.mode, self.frac, self.track = mode, float(frac), track
@@ -89,7 +91,7 @@ class Ablator:
     def _make_hook(self, i: int):
         def hook(module, args):
             h = args[0]
-            if self.mode == "off" or (self.mode in ("threshold", "random") and self.frac == 0.0):
+            if self.mode == "off" or (self.mode in ("threshold", "random", "randomfrac") and self.frac == 0.0):
                 return None
             if self.mode == "calibrate":
                 m_all = h.detach().abs().amax(dim=(0, 1)).float()
@@ -99,8 +101,11 @@ class Ablator:
                     self.calib_max[i] = m if self.calib_max[i] is None else torch.maximum(self.calib_max[i], m)
                 return None
 
-            thr = (self.amax[i] * self.frac).to(h.dtype)
-            mask = h.abs() < thr  # (B, T, D)
+            if self.mode == "randomfrac":
+                mask = torch.rand(h.shape, generator=self._generator(h.device), device=h.device) < self.frac
+            else:
+                thr = (self.amax[i] * self.frac).to(h.dtype)
+                mask = h.abs() < thr  # (B, T, D)
             if self.mode == "random":
                 k = mask.sum(dim=-1, keepdim=True)  # (B, T, 1) count to match
                 r = torch.rand(h.shape, generator=self._generator(h.device), device=h.device)
