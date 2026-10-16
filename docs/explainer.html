@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head><body>
+<title>Erasing Weak Activations</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&display=swap">
+<style>
+  /* Layout: one narrow column of three "beats", each a short line of text + one honest picture. */
+  :root {
+    --bg: #f7f8fa; --panel: #ffffff; --fg: #121417; --muted: #5b6270; --line: #dfe3ea;
+    --blue: #2a78d6; --blue-soft: #cde2fb; --orange: #eb6834; --orange-soft: #fbe0d4;
+    --display: "Bricolage Grotesque", "Avenir Next", "Helvetica Neue", Arial, sans-serif;
+    --body: "Source Sans 3", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+    --bg: #15171b; --panel: #1e2126; --fg: #f1f2f4; --muted: #a7adb8; --line: #343a44;
+    --blue: #3987e5; --blue-soft: #1c3a63; --orange: #d95926; --orange-soft: #5a2a16; color-scheme: dark; } }
+  :root[data-theme="dark"] {
+    --bg: #15171b; --panel: #1e2126; --fg: #f1f2f4; --muted: #a7adb8; --line: #343a44;
+    --blue: #3987e5; --blue-soft: #1c3a63; --orange: #d95926; --orange-soft: #5a2a16; color-scheme: dark; }
+
+  body { background: var(--bg); color: var(--fg); font-family: var(--body); font-size: 17px; line-height: 1.5;
+         padding-block: 40px 64px; padding-inline: 16px; }
+  main { max-width: 720px; margin: 0 auto; display: grid; gap: 40px; }
+  h1 { font-family: var(--display); font-weight: 800; font-size: clamp(30px, 6vw, 44px); line-height: 1.05;
+       letter-spacing: -0.02em; margin: 0 0 10px; text-wrap: balance; }
+  .lede { color: var(--muted); margin: 0; max-width: 60ch; }
+  .lede b { color: var(--fg); font-weight: 600; }
+  section { display: grid; gap: 14px; }
+  h2 { font-family: var(--display); font-weight: 700; font-size: 22px; margin: 0; letter-spacing: -0.01em; text-wrap: balance; }
+  h2 .step { display: inline-block; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted);
+             margin-right: 10px; font-family: var(--body); font-weight: 600; vertical-align: 2px; }
+  p { margin: 0; max-width: 62ch; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px 18px 14px; }
+  .cap { color: var(--muted); font-size: 14px; margin-top: 8px; }
+
+  /* Beat 1: a neuron's firings */
+  .spikes { display: flex; align-items: flex-end; gap: 4px; height: 150px; position: relative; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+  .spikes i { flex: 1 1 0; min-width: 0; background: var(--blue); border-radius: 2px 2px 0 0; display: block; }
+  .spikes i.weak { background: var(--blue-soft); }
+  .thr { position: absolute; left: 0; right: 0; bottom: calc(6px + 22px); border-top: 2px dashed var(--orange); }
+  .thr span { position: absolute; right: 0; top: -22px; font-size: 12px; font-weight: 600; color: var(--orange); background: var(--panel); padding: 0 4px; }
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; font-size: 14px; color: var(--muted); margin-top: 10px; }
+  .legend span::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; background: var(--blue); }
+  .legend span.w::before { background: var(--blue-soft); }
+
+  /* Beat 2 and 3: simple bar comparisons */
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 520px) { .compare { grid-template-columns: 1fr; } }
+  .card { display: grid; gap: 10px; }
+  .card h3 { font-family: var(--display); font-weight: 700; font-size: 17px; margin: 0; }
+  .card h3 small { display: block; font-family: var(--body); font-weight: 400; color: var(--muted); font-size: 14px; }
+  .bar { display: grid; grid-template-columns: 7.5em 1fr 3.2em; align-items: center; gap: 8px; font-size: 14px; }
+  .bar .lab { color: var(--muted); }
+  .bar .track { height: 18px; background: var(--line); border-radius: 3px; overflow: hidden; }
+  .bar .fill { height: 100%; border-radius: 3px; background: var(--blue); }
+  .bar .fill.o { background: var(--orange); }
+  .bar .val { font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; }
+  .tag { display: inline-block; font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; padding: 2px 8px; border-radius: 999px; }
+  .tag.b { background: var(--blue-soft); color: var(--fg); }
+  .tag.o { background: var(--orange-soft); color: var(--fg); }
+
+  .verdict { border-left: 4px solid var(--blue); padding: 6px 0 6px 16px; }
+  .verdict p + p { margin-top: 10px; }
+  .fine { color: var(--muted); font-size: 14px; max-width: 70ch; }
+  @media (prefers-reduced-motion: no-preference) { .fill { transition: width 600ms ease; } }
+</style>
+
+<main>
+  <header>
+    <h1>Most of what a neural net's neurons do is barely a whisper. Can you just delete the whispers?</h1>
+    <p class="lede">We tried it on a small language model (<b>Qwen3-1.7B</b>) and then asked it 14,000 trivia questions about people and places, famous and obscure. Here is what happened.</p>
+  </header>
+
+  <section>
+    <h2><span class="step">1</span>Neurons mostly fire weakly</h2>
+    <p>Each of the model's 172,000 neurons fires a little or a lot on every word it reads. Line up one neuron's firings and it looks like this: a few big spikes and a sea of tiny ones. Everything under the dashed line counts as "weak."</p>
+    <div class="panel">
+      <div class="spikes">
+        <i class="weak" style="height:6%"></i><i class="weak" style="height:9%"></i><i style="height:38%"></i><i class="weak" style="height:4%"></i><i class="weak" style="height:11%"></i><i class="weak" style="height:7%"></i><i class="weak" style="height:3%"></i><i style="height:22%"></i><i class="weak" style="height:8%"></i><i class="weak" style="height:5%"></i><i class="weak" style="height:12%"></i><i style="height:96%"></i><i class="weak" style="height:6%"></i><i class="weak" style="height:9%"></i><i class="weak" style="height:4%"></i><i style="height:27%"></i><i class="weak" style="height:7%"></i><i class="weak" style="height:10%"></i><i class="weak" style="height:3%"></i><i class="weak" style="height:8%"></i><i style="height:54%"></i><i class="weak" style="height:5%"></i><i class="weak" style="height:11%"></i><i class="weak" style="height:6%"></i><i class="weak" style="height:9%"></i><i style="height:19%"></i><i class="weak" style="height:4%"></i><i class="weak" style="height:7%"></i><i class="weak" style="height:12%"></i><i class="weak" style="height:5%"></i><i style="height:33%"></i><i class="weak" style="height:8%"></i><i class="weak" style="height:3%"></i><i class="weak" style="height:10%"></i><i class="weak" style="height:6%"></i><i style="height:71%"></i><i class="weak" style="height:9%"></i><i class="weak" style="height:4%"></i><i class="weak" style="height:7%"></i><i class="weak" style="height:11%"></i>
+        <div class="thr"><span>"weak" cutoff</span></div>
+      </div>
+      <div class="legend"><span>strong firing (kept)</span><span class="w">weak firing (erased)</span></div>
+      <p class="cap">Illustration of one neuron over 40 words. In the real experiment the cutoff is set per neuron, as a small percentage of that neuron's biggest-ever firing.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="step">2</span>Erase half of all firings: the model shrugs. Erase the same amount at random: it collapses.</h2>
+    <p>We set every weak firing to zero across the whole model while it answered trivia questions. Then we repeated the test, erasing just as many firings but chosen at random instead of by weakness.</p>
+    <div class="panel">
+      <div class="compare">
+        <div class="card">
+          <h3><span class="tag b">weakest 53% erased</span><small>Trivia score, out of a baseline 15.5%</small></h3>
+          <div class="bar"><span class="lab">before</span><div class="track"><div class="fill" style="width:100%"></div></div><span class="val">15.5%</span></div>
+          <div class="bar"><span class="lab">after</span><div class="track"><div class="fill" style="width:97%"></div></div><span class="val">15.1%</span></div>
+          <p class="cap">Its grip on ordinary text barely changed either: prediction error up 0.6%.</p>
+        </div>
+        <div class="card">
+          <h3><span class="tag o">random 55% erased</span><small>Same number of firings, chosen randomly</small></h3>
+          <div class="bar"><span class="lab">before</span><div class="track"><div class="fill o" style="width:100%"></div></div><span class="val">15.5%</span></div>
+          <div class="bar"><span class="lab">after</span><div class="track"><div class="fill o" style="width:1%"></div></div><span class="val">0.1%</span></div>
+          <p class="cap">Prediction error tripled. The model produces gibberish.</p>
+        </div>
+      </div>
+    </div>
+    <p>So the weak firings really are close to dead weight. You can throw out more than half of everything the neurons do and the model keeps nearly all of its knowledge.</p>
+  </section>
+
+  <section>
+    <h2><span class="step">3</span>Push harder, and the <em>famous</em> facts die first</h2>
+    <p>One theory said the whispers are where the model hides its rarest knowledge, so obscure facts should vanish first. We split the trivia questions into obscure and famous subjects (by Wikipedia page views) and kept erasing, up to 77% of all firings.</p>
+    <div class="panel">
+      <div class="card">
+        <h3>Share of previously-correct answers still correct<small>After erasing the weakest 77% of firings</small></h3>
+        <div class="bar"><span class="lab">obscure subjects</span><div class="track"><div class="fill" style="width:84%"></div></div><span class="val">84%</span></div>
+        <div class="bar"><span class="lab">famous subjects</span><div class="track"><div class="fill" style="width:73%"></div></div><span class="val">73%</span></div>
+        <p class="cap">At 82% erased it is 76% kept for obscure versus 60% for famous. The gap holds across every cutoff we tried in this range, with confidence intervals that do not include zero.</p>
+      </div>
+    </div>
+    <p>The obscure facts are, if anything, the sturdier ones. Whatever is in the weak firings, it is not a secret stash of rare knowledge.</p>
+  </section>
+
+  <section class="verdict">
+    <h2>The short version</h2>
+    <p>Weak neuron firings carry very little, and what little they carry is not rare facts. The "delete the whispers" side of the argument holds up on a language model.</p>
+    <p class="fine">Caveats: randomly damaging the model also hurts famous facts first, so that ordering looks like a general property of damage rather than something special about weak firings. And the obscure questions start out mostly unanswered (10% correct versus 28% for famous), so some of their surviving answers may be lucky guesses. Numbers: Qwen3-1.7B-Base, PopQA, 8-shot, within-relation popularity bins.</p>
+  </section>
+</main>
+
+</body></html>
