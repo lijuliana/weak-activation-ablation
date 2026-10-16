@@ -1,0 +1,10 @@
+torch>=2.4
+transformers>=4.51
+datasets>=3.0
+accelerate
+numpy
+pandas
+pyarrow
+matplotlib
+tqdm
+safetensors
