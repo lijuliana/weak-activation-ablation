@@ -124,6 +124,26 @@ not of stored facts.
 
 ![Token frequency](figures/qwen3-1.7b-base/fig4_token_frequency.png)
 
+**5. Amplifying the weak tail instead of zeroing it: the network does read it, linearly.** To test
+Cammarata's conjecture that the network "mostly ignores weak activations," we multiplied every
+sub-threshold activation by a factor s instead of zeroing it (s = 0 is the ablation above, s = 1 is the
+unmodified model). If the weak regime were a dead zone, s = 2 or 4 should be as harmless as s = 0.
+Instead the loss is a smooth, nearly symmetric bowl around s = 1, roughly quadratic in the size of the
+perturbation: halving the tail costs about a quarter of deleting it, doubling it costs about the same as
+deleting it, and quadrupling it at the 77% level is catastrophic.
+
+| cutoff (share of activations affected) | s = 0 (zero) | s = 0.5 | s = 1 | s = 2 | s = 4 |
+|---|---|---|---|---|---|
+| 0.5% of max (53%) | +0.014 nats, 15.1% | +0.003, 15.3% | 0, 15.5% | +0.016, 15.2% | +0.19, 13.1% |
+| 1.5% of max (77%) | +0.18, 13.2% | +0.04, 14.9% | 0, 15.5% | +0.24, 12.8% | +4.3, 0.4% |
+
+(held-out loss increase on FineWeb-edu, PopQA accuracy; `scripts/run_scale_weak.sh`,
+`figures/quick/quick4_scale_weak_tail.png`.) So weak activations are cheap to remove because they
+are *small*, not because downstream layers ignore them: the readout is approximately linear, the
+cost of a perturbation grows with its square, and the weak tail sits in the flat bottom of that bowl.
+This also says the information the weak tail can carry is bounded by its magnitude, and that a soft
+shrink (s = 0.5) is a much cheaper way to sparsify than a hard threshold.
+
 **Interpretation.** On the question that divided the essay and its critics, the essay's side holds on
 an LLM: the weak tail of SwiGLU activations can be discarded wholesale at negligible cost, and the
 cost that eventually appears is not concentrated on rare facts. This does not show that superposition
@@ -137,4 +157,4 @@ dominated by outlier maxes, so the informative range is X < 5% and the realized 
 axis; zero-ablation rather than mean-ablation (for near-zero activations the two coincide); 8-shot
 base-model prompting, greedy decoding.
 
-**Compute.** One A100-40GB on GCP, about 2.7 h for 33 conditions.
+**Compute.** One A100-40GB on GCP, about 2.7 h for the 33 main conditions plus 0.5 h for the six scale-weak-tail conditions.
