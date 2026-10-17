@@ -47,6 +47,8 @@ def parse_args():
     p.add_argument("--random-max-frac", type=float, default=None,
                    help="run the count-matched random control only for thresholds <= this value; beyond ~50%% "
                         "sparsity that control is at chance on everything, so further points carry no information")
+    p.add_argument("--scale-fracs", default="", help="thresholds at which to run the scale-weak-tail test")
+    p.add_argument("--scales", default="", help="multipliers for the weak tail (e.g. 0.5,2,4); 0 = zeroing, 1 = baseline")
     p.add_argument("--random-fracs", default="", help="optional fixed fractions of activations to zero at random "
                    "(e.g. 0.01,0.03,0.1), run after the main sweep to cover the low-damage regime")
     p.add_argument("--lm-batch", type=int, default=8)
@@ -133,6 +135,10 @@ def main():
         for s in seeds:
             conds.append(("randomfrac", pfrac, s))
 
+    for sfrac in [float(x) for x in args.scale_fracs.split(",") if x]:
+        for sc in [float(x) for x in args.scales.split(",") if x]:
+            conds.append((f"scaleweak_x{sc:g}", sfrac, 0))
+
     summary_f = out / "summary.jsonl"
     done = set()
     if summary_f.exists():
@@ -144,16 +150,18 @@ def main():
             print(f"skip {cond} (done)")
             continue
         t0 = time.time()
-        ablator.set(mode, frac, seed=seed, track=True)
+        scale = float(mode.split("_x")[1]) if mode.startswith("scaleweak") else 0.0
+        hook_mode = "scaleweak" if mode.startswith("scaleweak") else mode
+        ablator.set(hook_mode, frac, seed=seed, track=True, scale=scale)
         nll_fw = lm_nll_per_token(model, heldout, args.lm_batch, device, desc=f"{cond} fineweb")
         sparsity_layers = ablator.stats.fraction_per_layer()
         sparsity = ablator.stats.fraction()
-        ablator.set(mode, frac, seed=seed, track=False)
+        ablator.set(hook_mode, frac, seed=seed, track=False, scale=scale)
         nll_wt = lm_nll_per_token(model, wt103, args.lm_batch, device, desc=f"{cond} wt103")
         np.save(out / f"nll_fineweb_{cond}.npy", nll_fw.astype(np.float16))
         np.save(out / f"nll_wt103_{cond}.npy", nll_wt.astype(np.float16))
 
-        ablator.set(mode, frac, seed=seed, track=False)
+        ablator.set(hook_mode, frac, seed=seed, track=False, scale=scale)
         gens = popqa_generate(model, tok, prompts, args.popqa_batch, args.max_new_tokens, device, desc=f"{cond} popqa")
         correct = np.array([is_correct(g, a) for g, a in zip(gens, answers)], dtype=bool)
         np.save(out / f"popqa_correct_{cond}.npy", correct)

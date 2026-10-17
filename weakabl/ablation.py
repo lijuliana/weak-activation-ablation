@@ -40,6 +40,9 @@ class Ablator:
                    threshold rule would, but chosen uniformly at random.
     - "randomfrac": zero a fixed fraction `frac` of entries uniformly at random (not tied to
                    the threshold rule); extends the random control into the low-damage regime.
+    - "scaleweak": multiply entries with |a| < frac * amax[neuron] by `scale` instead of zeroing
+                   them (scale=0 reproduces "threshold"; scale>1 amplifies the weak tail). Tests
+                   whether downstream layers read the weak regime at all.
     """
 
     def __init__(self, model, seed: int = 0):
@@ -47,6 +50,7 @@ class Ablator:
         self.n_layers = len(self.modules)
         self.mode = "off"
         self.frac = 0.0
+        self.scale = 0.0
         self.amax: list[torch.Tensor] | None = None
         self.calib_max: list[torch.Tensor | None] = [None] * self.n_layers
         self.calib_max_incl0: list[torch.Tensor | None] = [None] * self.n_layers
@@ -62,11 +66,11 @@ class Ablator:
             h.remove()
         self._handles = []
 
-    def set(self, mode: str, frac: float = 0.0, seed: int | None = None, track: bool = False):
-        assert mode in ("off", "calibrate", "threshold", "random", "randomfrac"), mode
-        if mode in ("threshold", "random"):
+    def set(self, mode: str, frac: float = 0.0, seed: int | None = None, track: bool = False, scale: float = 0.0):
+        assert mode in ("off", "calibrate", "threshold", "random", "randomfrac", "scaleweak"), mode
+        if mode in ("threshold", "random", "scaleweak"):
             assert self.amax is not None, "load or compute calibration first"
-        self.mode, self.frac, self.track = mode, float(frac), track
+        self.mode, self.frac, self.track, self.scale = mode, float(frac), track, float(scale)
         if seed is not None:
             self.seed = seed
         self._gen = None  # re-seeded lazily on the right device
@@ -91,7 +95,7 @@ class Ablator:
     def _make_hook(self, i: int):
         def hook(module, args):
             h = args[0]
-            if self.mode == "off" or (self.mode in ("threshold", "random", "randomfrac") and self.frac == 0.0):
+            if self.mode == "off" or (self.mode in ("threshold", "random", "randomfrac", "scaleweak") and self.frac == 0.0):
                 return None
             if self.mode == "calibrate":
                 m_all = h.detach().abs().amax(dim=(0, 1)).float()
@@ -114,6 +118,8 @@ class Ablator:
             if self.track:
                 self.stats.zeroed[i] += float(mask.sum())
                 self.stats.total[i] += float(mask.numel())
+            if self.mode == "scaleweak":
+                return (torch.where(mask, h * self.scale, h),)
             return (h.masked_fill(mask, 0),)
 
         return hook
