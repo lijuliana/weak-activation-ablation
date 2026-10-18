@@ -144,6 +144,28 @@ cost of a perturbation grows with its square, and the weak tail sits in the flat
 This also says the information the weak tail can carry is bounded by its magnitude, and that a soft
 shrink (s = 0.5) is a much cheaper way to sparsify than a hard threshold.
 
+**6. Per-neuron influence by activation magnitude: a neuron's effect is proportional to its
+activation squared at every magnitude.** For 80 neurons (10 each from layers 0, 4, 8, 12, 16, 20, 24,
+27), tokens were binned by percentile of the neuron's own |activation| over 65k held-out tokens; the
+neuron was zeroed only at the tokens in a bin and the KL between clean and ablated next-token
+distributions was measured at those tokens (fp32, eager attention, numerical floor exactly 0;
+cross-token leakage ~1e-7). Medians across neurons:
+
+| tokens by the neuron's |activation| | h / max | KL when zeroed | share of the neuron's total effect | KL / h² |
+|---|---|---|---|---|
+| weakest 50% | 0.002 | 5e-8 | 0.5% | 1.5e-5 |
+| 10-50% | 0.009 | 1e-6 | 9% | 1.7e-5 |
+| 1-10% | 0.03 | 7e-6 | 19% | 1.5e-5 |
+| 0.1-1% | 0.10 | 1e-4 | 26% | 2.1e-5 |
+| top 0.1% | 0.33 | 1.5e-3 | 39% | 2.4e-5 |
+
+The downstream effect does sit overwhelmingly where the neuron fires strongly (its top 1% of tokens
+carry 64% of its total effect, the top 10% carry 83%, the weakest half carries 0.5%), but the effect
+per unit of activation squared is flat to within a factor of 1.6 across two and a half orders of
+magnitude in activation. There is no magnitude at which downstream layers start or stop listening: the
+neuron is read linearly everywhere, and strong activations matter more only because they are larger.
+(`weakabl/neuron_influence.py`, `figures/quick/quick5_neuron_influence.png`, `quick6_..._by_layer.png`.)
+
 **Interpretation.** On the question that divided the essay and its critics, the essay's side holds on
 an LLM: the weak tail of SwiGLU activations can be discarded wholesale at negligible cost, and the
 cost that eventually appears is not concentrated on rare facts. This does not show that superposition
@@ -157,4 +179,4 @@ dominated by outlier maxes, so the informative range is X < 5% and the realized 
 axis; zero-ablation rather than mean-ablation (for near-zero activations the two coincide); 8-shot
 base-model prompting, greedy decoding.
 
-**Compute.** One A100-40GB on GCP, about 2.7 h for the 33 main conditions plus 0.5 h for the six scale-weak-tail conditions.
+**Compute.** One A100-40GB on GCP, about 2.7 h for the 33 main conditions plus 0.5 h for the six scale-weak-tail conditions and 1.6 h (fp32) for the per-neuron influence sweep.

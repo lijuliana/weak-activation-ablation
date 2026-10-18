@@ -36,7 +36,7 @@ for ax, col, title, ylab in [
     if col != "share":
         ax.set_yscale("log")
 axes[0].set_xlabel("tokens binned by the neuron's own |activation| (percentile)")
-fig.suptitle(f"{df.groupby(['layer','neuron']).ngroups} neurons across layers {sorted(df.layer.unique())}; median and IQR across neurons")
+fig.suptitle(f"{df.groupby(['layer','neuron']).ngroups} neurons across layers {sorted(int(l) for l in df.layer.unique())}; median and IQR across neurons")
 fig.tight_layout(); fig.savefig(out / "quick5_neuron_influence.png", dpi=150)
 
 # per-layer version of the per-unit curve
